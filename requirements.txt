@@ -1,6 +1,8 @@
 fastapi
 uvicorn
 python-dotenv
+pydantic
 fastapi-mail==1.4.1
 email-validator
 python-multipart
+pydantic<2
