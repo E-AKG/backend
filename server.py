@@ -5,6 +5,9 @@ from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 import os
 from dotenv import load_dotenv
 import logging
+import json
+from typing import List, Optional
+from datetime import datetime
 
 # =============== INIT ===================
 load_dotenv()  # Lädt Umgebungsvariablen aus .env (lokal) oder Render Environment
@@ -33,11 +36,47 @@ conf = ConnectionConfig(
     USE_CREDENTIALS=True,
 )
 
-# =============== MODEL ===================
+# =============== MODELS ===================
 class ContactForm(BaseModel):
     name: str
     email: EmailStr
     message: str
+
+class CommentCreate(BaseModel):
+    name: Optional[str] = "Anonym"
+    comment: str
+    insightId: str
+
+class Comment(BaseModel):
+    id: str
+    name: str
+    comment: str
+    date: str
+    insightId: str
+
+# =============== STORAGE ===================
+# Einfache JSON-Datei als Datenbank (kann später durch echte DB ersetzt werden)
+COMMENTS_FILE = "comments.json"
+
+def load_comments():
+    """Lädt alle Kommentare aus der JSON-Datei"""
+    if os.path.exists(COMMENTS_FILE):
+        try:
+            with open(COMMENTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Fehler beim Laden der Kommentare: {e}")
+            return {}
+    return {}
+
+def save_comments(comments_dict):
+    """Speichert alle Kommentare in die JSON-Datei"""
+    try:
+        with open(COMMENTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(comments_dict, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Fehler beim Speichern der Kommentare: {e}")
+        raise
 
 # =============== ROUTES ===================
 @app.get("/")
@@ -63,6 +102,62 @@ async def send_contact(form: ContactForm):
     except Exception as e:
         logging.exception("Mail senden fehlgeschlagen")
         raise HTTPException(status_code=500, detail=f"Fehler beim Mailversand: {str(e)}")
+
+# =============== COMMENT ROUTES ===================
+@app.get("/api/comments/{insight_id}")
+def get_comments(insight_id: str):
+    """Gibt alle Kommentare für einen bestimmten Insight zurück"""
+    comments_dict = load_comments()
+    return comments_dict.get(insight_id, [])
+
+@app.post("/api/comments")
+def create_comment(comment_data: CommentCreate):
+    """Erstellt einen neuen Kommentar"""
+    comments_dict = load_comments()
+    
+    # Neue Kommentar-ID generieren
+    comment_id = f"{int(datetime.now().timestamp() * 1000)}"
+    
+    new_comment = {
+        "id": comment_id,
+        "name": comment_data.name or "Anonym",
+        "comment": comment_data.comment,
+        "date": datetime.now().isoformat(),
+        "insightId": comment_data.insightId
+    }
+    
+    # Kommentare für diesen Insight laden oder leere Liste erstellen
+    if comment_data.insightId not in comments_dict:
+        comments_dict[comment_data.insightId] = []
+    
+    # Neuen Kommentar hinzufügen (am Anfang für neueste zuerst)
+    comments_dict[comment_data.insightId].insert(0, new_comment)
+    
+    # Speichern
+    save_comments(comments_dict)
+    
+    return new_comment
+
+@app.delete("/api/comments/{insight_id}/{comment_id}")
+def delete_comment(insight_id: str, comment_id: str):
+    """Löscht einen Kommentar"""
+    comments_dict = load_comments()
+    
+    if insight_id not in comments_dict:
+        raise HTTPException(status_code=404, detail="Insight nicht gefunden")
+    
+    # Kommentar finden und entfernen
+    comments = comments_dict[insight_id]
+    original_length = len(comments)
+    comments_dict[insight_id] = [c for c in comments if c["id"] != comment_id]
+    
+    if len(comments_dict[insight_id]) == original_length:
+        raise HTTPException(status_code=404, detail="Kommentar nicht gefunden")
+    
+    # Speichern
+    save_comments(comments_dict)
+    
+    return {"status": "ok", "message": "Kommentar gelöscht"}
 
 # =============== ERROR HANDLER ===================
 @app.get("/health")
