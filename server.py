@@ -138,27 +138,6 @@ def create_comment(comment_data: CommentCreate):
     
     return new_comment
 
-@app.delete("/api/comments/{insight_id}/{comment_id}")
-def delete_comment(insight_id: str, comment_id: str):
-    """Löscht einen Kommentar"""
-    comments_dict = load_comments()
-    
-    if insight_id not in comments_dict:
-        raise HTTPException(status_code=404, detail="Insight nicht gefunden")
-    
-    # Kommentar finden und entfernen
-    comments = comments_dict[insight_id]
-    original_length = len(comments)
-    comments_dict[insight_id] = [c for c in comments if c["id"] != comment_id]
-    
-    if len(comments_dict[insight_id]) == original_length:
-        raise HTTPException(status_code=404, detail="Kommentar nicht gefunden")
-    
-    # Speichern
-    save_comments(comments_dict)
-    
-    return {"status": "ok", "message": "Kommentar gelöscht"}
-
 # =============== ERROR HANDLER ===================
 @app.get("/health")
 def health_check():
