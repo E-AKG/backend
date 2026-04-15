@@ -34,12 +34,17 @@ conf = ConnectionConfig(
     MAIL_STARTTLS=os.getenv("MAIL_STARTTLS", "False").lower() == "true",
     MAIL_SSL_TLS=os.getenv("MAIL_SSL_TLS", "True").lower() == "true",
     USE_CREDENTIALS=True,
+    VALIDATE_CERTS=os.getenv("MAIL_VALIDATE_CERTS", "True").lower() == "true",
+    TIMEOUT=int(os.getenv("MAIL_TIMEOUT", 60)),
 )
 
 # =============== MODELS ===================
 class ContactForm(BaseModel):
     name: str
+    company: str
     email: EmailStr
+    phone: Optional[str] = None
+    interest: str
     message: str
 
 class CommentCreate(BaseModel):
@@ -88,20 +93,87 @@ async def send_contact(form: ContactForm):
     """
     Empfängt Kontaktformular-Daten vom Frontend und sendet E-Mail an kontakt@izenic.com
     """
+    request_id = f"contact-{int(datetime.now().timestamp() * 1000)}"
     try:
-        message = MessageSchema(
-            subject=f"Neue Anfrage von {form.name}",
-            recipients=["kontakt@izenic.com"],  # Zieladresse(n)
-            body=f"Von: {form.name} <{form.email}>\n\n{form.message}",
+        recipients_env = os.getenv("MAIL_TO", "kontakt@izenic.com")
+        recipients = [mail.strip() for mail in recipients_env.split(",") if mail.strip()]
+        if not recipients:
+            raise ValueError("MAIL_TO ist leer oder ungueltig konfiguriert.")
+
+        # Unterstuetzt neue Frontend-Werte und alte Werte (Rueckwaertskompatibilitaet)
+        interest_labels = {
+            "audit": "KI-Potenzial-Audit",
+            "workflow": "Workflow-Automatisierung",
+            "retainer": "IZENIC Retainer",
+            "peak": "PEAK-Prozess / Erstberatung",
+            "advisory": "Strategische KI-Beratung",
+            "general": "Allgemeine Anfrage",
+            "compliance": "AI Compliance & Governance",
+            "agentic": "Agentic Workflow Systems",
+            "sovereign": "Sovereign AI / Private AI",
+        }
+        interest_label = interest_labels.get(form.interest, form.interest)
+
+        fm = FastMail(conf)
+
+        owner_message = MessageSchema(
+            subject=f"Neue Kontaktanfrage von {form.name}",
+            recipients=recipients,
+            body=(
+                f"Request-ID: {request_id}\n"
+                "Neue Anfrage ueber das Kontaktformular\n\n"
+                f"Name: {form.name}\n"
+                f"Unternehmen: {form.company}\n"
+                f"E-Mail: {form.email}\n"
+                f"Telefon: {form.phone or '-'}\n"
+                f"Interessensbereich: {interest_label}\n\n"
+                "Nachricht:\n"
+                f"{form.message}"
+            ),
             subtype="plain"
         )
-        fm = FastMail(conf)
-        await fm.send_message(message)
-        logging.info(f"Mail erfolgreich gesendet von {form.email}")
-        return {"status": "ok"}
+        await fm.send_message(owner_message)
+        logging.info("Kontaktanfrage an Empfaenger versendet [%s]", request_id)
+
+        confirmation_sent = False
+        try:
+            confirmation_message = MessageSchema(
+                subject="Danke fuer Ihre Anfrage bei IZENIC",
+                recipients=[str(form.email)],
+                body=(
+                    f"Hallo {form.name},\n\n"
+                    "danke fuer Ihre Anfrage. Wir haben Ihre Nachricht erhalten und melden uns in der Regel innerhalb von 24 Stunden bei Ihnen.\n\n"
+                    "Ihre Angaben:\n"
+                    f"- Unternehmen: {form.company}\n"
+                    f"- Interessensbereich: {interest_label}\n"
+                    f"- Telefon: {form.phone or '-'}\n\n"
+                    "Viele Gruesse\n"
+                    "IZENIC"
+                ),
+                subtype="plain"
+            )
+            await fm.send_message(confirmation_message)
+            confirmation_sent = True
+        except Exception:
+            # Anfrage soll trotzdem als erfolgreich gelten, wenn nur die Bestaetigung scheitert.
+            logging.warning("Bestaetigungsmail konnte nicht gesendet werden [%s]", request_id, exc_info=True)
+
+        return {"status": "ok", "request_id": request_id, "confirmation_sent": confirmation_sent}
     except Exception as e:
-        logging.exception("Mail senden fehlgeschlagen")
-        raise HTTPException(status_code=500, detail=f"Fehler beim Mailversand: {str(e)}")
+        logging.exception("Mailversand fehlgeschlagen [%s]", request_id)
+        err_text = str(e)
+        if "CERTIFICATE_VERIFY_FAILED" in err_text:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "SMTP-SSL Zertifikat konnte nicht verifiziert werden. "
+                    "Pruefen Sie MAIL_SERVER/MAIL_PORT oder setzen Sie testweise MAIL_VALIDATE_CERTS=False."
+                ),
+            )
+        raise HTTPException(
+            status_code=500,
+            detail="Fehler beim Mailversand. Bitte versuchen Sie es spaeter erneut oder schreiben Sie an hello@izenic.de."
+        )
 
 # =============== COMMENT ROUTES ===================
 @app.get("/api/comments/{insight_id}")
